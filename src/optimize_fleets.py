@@ -115,14 +115,6 @@ def find_minimal_fleet(delivery_df, fleet_type):
                     for d in range(n_possible_fleets):
                         m.addConstr(x[i, d] <= y[d])
 
-                for d in range(n_possible_fleets):
-                    m.addConstr(
-                        gp.quicksum(
-                            service_time[i] * x[i, d]
-                            for i in range(n_orders)
-                        ) <= constants.TIME_BUCKET
-                    )
-
                 for d in range(n_possible_fleets - 1):
                     m.addConstr(y[d] >= y[d + 1])
 
