@@ -11,7 +11,7 @@ from shapely.ops import unary_union
 import constants 
 
 
-def generate_random_points_with_exclusions(main_coords, exclusion_zones, num_points):
+def generate_random_points_with_exclusions(main_coords, num_points):
     """
     Generates random (latitude, longitude) coordinates within a main polygon,
     excluding specified sub-areas.
@@ -25,9 +25,9 @@ def generate_random_points_with_exclusions(main_coords, exclusion_zones, num_poi
     valid_area = Polygon(main_coords)
 
     # 2. Subtract each exclusion zone from the main polygon
-    for zone in exclusion_zones:
-        exclusion_poly = Polygon(zone)
-        valid_area = valid_area.difference(exclusion_poly)
+    #for zone in exclusion_zones:
+    #    exclusion_poly = Polygon(zone)
+    #    valid_area = valid_area.difference(exclusion_poly)
 
     # 3. Get the bounding box of the new, modified area
     min_x, min_y, max_x, max_y = valid_area.bounds
@@ -97,7 +97,7 @@ def generate_random_points_stockholm_innercity(N, area="all"):
     inner_city_shape = unary_union(districts)
 
     # 3. Generate N random points across all of inner-city Stockholm, excluding no-fly zones
-    return generate_random_points_in_shape(inner_city_shape, [], N)
+    return generate_random_points_in_shape(inner_city_shape, N)
 
 def get_road_distance(restaurants, delivery_locations, restaurants_dict):
 
