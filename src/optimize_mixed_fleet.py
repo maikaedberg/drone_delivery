@@ -24,11 +24,41 @@ def _bucket_orders(restaurant_df):
     return buckets
 
 
+def _count_moped_fleets(restaurant_df):
+    service_times = sorted(
+        restaurant_df[constants.MOPED_UNAVAILABILITY_TIME].tolist(),
+        reverse=True,
+    )
+    loads = []
+    bins = []
+
+    for service_time in service_times:
+        for index, load in enumerate(loads):
+            if load + service_time <= constants.TIME_BUCKET:
+                bins[index].append(service_time)
+                loads[index] += service_time
+                break
+        else:
+            bins.append([service_time])
+            loads.append(service_time)
+
+    return len(bins)
+
+
 def find_minimal_mixed_fleet(delivery_df, use_no_fly_zone=True):
     mixed_fleet = {}
 
     for restaurant, restaurant_df in delivery_df.groupby(constants.RESTAURANT_NAME):
-        buckets = _bucket_orders(restaurant_df)
+        if use_no_fly_zone and (restaurant_df[constants.NO_FLY_STATUS] == constants.STATUS_NOGO).all():
+            moped_fleet_count = _count_moped_fleets(restaurant_df)
+            mixed_fleet[restaurant] = {
+                "drones": 0,
+                "mopeds": moped_fleet_count,
+                "hourly_cost": round(moped_fleet_count * constants.MOPED_COST_PER_HOUR),
+            }
+            continue
+
+        buckets = [_bucket.reset_index(drop=True) for _bucket in _bucket_orders(restaurant_df)]
         max_orders_in_bucket = max(len(bucket) for bucket in buckets)
         model = gp.Model(f"mixed_delivery_{restaurant}")
         model.Params.OutputFlag = 0
@@ -65,38 +95,38 @@ def find_minimal_mixed_fleet(delivery_df, use_no_fly_zone=True):
                 name=f"moped_assignment_{bucket_index}",
             )
 
-            for order_index, order in bucket.iterrows():
+            for order_position, order in bucket.iterrows():
                 model.addConstr(
                     gp.quicksum(
-                        drone_assignment[order_index, fleet_index]
-                        + moped_assignment[order_index, fleet_index]
+                        drone_assignment[order_position, fleet_index]
+                        + moped_assignment[order_position, fleet_index]
                         for fleet_index in range(max_orders_in_bucket)
                     ) == 1
                 )
 
                 if use_no_fly_zone and order[constants.NO_FLY_STATUS] == constants.STATUS_NOGO:
                     for fleet_index in range(max_orders_in_bucket):
-                        model.addConstr(drone_assignment[order_index, fleet_index] == 0)
+                        model.addConstr(drone_assignment[order_position, fleet_index] == 0)
 
             for fleet_index in range(max_orders_in_bucket):
                 model.addConstr(
                     gp.quicksum(
-                        drone_assignment[order_index, fleet_index]
+                        drone_assignment[order_position, fleet_index]
                         * (
-                            bucket.iloc[order_index][constants.DRONE_UNAVAILABILITY_TIME]
+                            bucket.iloc[order_position][constants.DRONE_UNAVAILABILITY_TIME]
                             if pd.notna(
-                                bucket.iloc[order_index][constants.DRONE_UNAVAILABILITY_TIME]
+                                bucket.iloc[order_position][constants.DRONE_UNAVAILABILITY_TIME]
                             )
                             else 0
                         )
-                        for order_index in range(len(bucket))
+                        for order_position in range(len(bucket))
                     ) <= constants.TIME_BUCKET * drone_fleet[fleet_index]
                 )
                 model.addConstr(
                     gp.quicksum(
-                        moped_assignment[order_index, fleet_index]
-                        * bucket.iloc[order_index][constants.MOPED_UNAVAILABILITY_TIME]
-                        for order_index in range(len(bucket))
+                        moped_assignment[order_position, fleet_index]
+                        * bucket.iloc[order_position][constants.MOPED_UNAVAILABILITY_TIME]
+                        for order_position in range(len(bucket))
                     ) <= constants.TIME_BUCKET * moped_fleet[fleet_index]
                 )
 

@@ -185,14 +185,17 @@ def get_drone_unavailability_time(drone_flight_distances):
     return [calculate_drone_unavailability_time(d) for d in drone_flight_distances]
 
 def check_nofly_status(resto_lat, resto_lon, order_lat, order_lon, exclusion_zones):
+    restaurant_point = Point(resto_lon, resto_lat)
     order_point = Point(order_lon, order_lat)
     flight_path = LineString([(resto_lon, resto_lat), (order_lon, order_lat)])
     exclusion_polygons = [Polygon(zone) for zone in exclusion_zones]
 
     for poly in exclusion_polygons:
-        if poly.contains(order_point):
+        if poly.contains(restaurant_point) or poly.touches(restaurant_point):
             return constants.STATUS_NOGO
-        elif flight_path.intersects(poly):
+        if poly.contains(order_point) or poly.touches(order_point):
+            return constants.STATUS_NOGO
+        if flight_path.intersects(poly):
             return constants.STATUS_INTERSECT
     return constants.STATUS_CLEAR
 
@@ -219,7 +222,7 @@ def generate_delivery_data(N, restaurants_dict, area, fname):
     no_fly_status = []
     for resto, (order_lat, order_lon) in zip(restaurants, delivery_locations):
         resto_lat, resto_lon = restaurants_dict[resto]
-        exclusion_polygons = [constants.GOVERNMENT_NO_FLY_STATUS, constants.JAIL_NO_FLY_ZONE]
+        exclusion_polygons = constants.EXCLUSION_NO_FLY_ZONE
         no_fly_status.append(check_nofly_status(resto_lat, resto_lon, order_lat, order_lon, exclusion_polygons))
 
     drone_delivery_distances = geodesic_dists.copy()
