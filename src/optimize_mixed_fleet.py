@@ -7,6 +7,39 @@ import pandas as pd
 import constants
 
 
+def _drone_time_for_order(order):
+    if (
+        constants.PENALIZED_DRONE_UNAVAILABILITY_TIME in order.index
+        and pd.notna(order[constants.PENALIZED_DRONE_UNAVAILABILITY_TIME])
+    ):
+        return float(order[constants.PENALIZED_DRONE_UNAVAILABILITY_TIME])
+
+    if pd.notna(order.get(constants.DRONE_UNAVAILABILITY_TIME)):
+        return float(order[constants.DRONE_UNAVAILABILITY_TIME])
+
+    if pd.notna(order.get(constants.DRONE_DELIVERY_DISTANCE)):
+        return float(order[constants.DRONE_DELIVERY_DISTANCE]) / constants.SPEED_DRONE * 60
+
+    return 0.0
+
+
+def _moped_time_for_order(order):
+    if pd.notna(order.get(constants.MOPED_UNAVAILABILITY_TIME)):
+        return float(order[constants.MOPED_UNAVAILABILITY_TIME])
+
+    if pd.notna(order.get(constants.MOPED_DELIVERY_DISTANCE)):
+        return float(order[constants.MOPED_DELIVERY_DISTANCE]) / constants.SPEED_MOPED * 60
+
+    return 0.0
+
+
+def _drone_unavailability_from_geodesic(geodesic_distance_km):
+    flight_distance_km = float(geodesic_distance_km or 0.0) * 2
+    flight_time = flight_distance_km / constants.SPEED_DRONE * 60
+    charge_time = (flight_distance_km / constants.FULL_CHARGE_DIST) * constants.FULL_CHARGE_TIME
+    return flight_time + charge_time + 1
+
+
 def _bucket_orders(restaurant_df):
     total_num_buckets = constants.TOTAL_TIME // constants.TIME_BUCKET
     bucket_size = (
@@ -57,6 +90,17 @@ def find_minimal_mixed_fleet(delivery_df, use_no_fly_zone=True):
                 "hourly_cost": round(moped_fleet_count * constants.MOPED_COST_PER_HOUR),
             }
             continue
+
+        if not use_no_fly_zone:
+            restaurant_df = restaurant_df.copy()
+            restaurant_df[constants.NO_FLY_STATUS] = constants.STATUS_CLEAR
+            restaurant_df[constants.DRONE_DELIVERY_DISTANCE] = restaurant_df[constants.GEODESIC_DIST].fillna(0)
+            restaurant_df[constants.DRONE_UNAVAILABILITY_TIME] = restaurant_df[constants.GEODESIC_DIST].apply(
+                _drone_unavailability_from_geodesic
+            )
+            restaurant_df[constants.PENALIZED_DRONE_UNAVAILABILITY_TIME] = restaurant_df[
+                constants.DRONE_UNAVAILABILITY_TIME
+            ]
 
         buckets = [_bucket.reset_index(drop=True) for _bucket in _bucket_orders(restaurant_df)]
         max_orders_in_bucket = max(len(bucket) for bucket in buckets)
@@ -111,22 +155,16 @@ def find_minimal_mixed_fleet(delivery_df, use_no_fly_zone=True):
             for fleet_index in range(max_orders_in_bucket):
                 model.addConstr(
                     gp.quicksum(
-                        drone_assignment[order_position, fleet_index]
-                        * (
-                            bucket.iloc[order_position][constants.DRONE_UNAVAILABILITY_TIME]
-                            if pd.notna(
-                                bucket.iloc[order_position][constants.DRONE_UNAVAILABILITY_TIME]
-                            )
-                            else 0
-                        )
-                        for order_position in range(len(bucket))
+                        drone_assignment[order_index, fleet_index]
+                        * _drone_time_for_order(bucket.iloc[order_index])
+                        for order_index in range(len(bucket))
                     ) <= constants.TIME_BUCKET * drone_fleet[fleet_index]
                 )
                 model.addConstr(
                     gp.quicksum(
-                        moped_assignment[order_position, fleet_index]
-                        * bucket.iloc[order_position][constants.MOPED_UNAVAILABILITY_TIME]
-                        for order_position in range(len(bucket))
+                        moped_assignment[order_index, fleet_index]
+                        * _moped_time_for_order(bucket.iloc[order_index])
+                        for order_index in range(len(bucket))
                     ) <= constants.TIME_BUCKET * moped_fleet[fleet_index]
                 )
 
@@ -164,7 +202,6 @@ def analyse_mixed_fleet(fname, use_no_fly_zone=True):
             f"Mopeds: {fleet['mopeds']}, Hourly Cost: {fleet['hourly_cost']} SEK"
         )
 
-
 parser = argparse.ArgumentParser()
 parser.add_argument("-f", default="delivery_locations.csv", help="Input filename")
 parser.add_argument(
@@ -179,3 +216,4 @@ if Path(args.f).name != args.f:
 
 input_file = Path(__file__).resolve().parent.parent / "data" / args.f
 analyse_mixed_fleet(input_file, use_no_fly_zone=not args.ignore_no_fly_zone)
+

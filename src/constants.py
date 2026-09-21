@@ -42,7 +42,9 @@ R113_NO_FLY_STATUS = [
     (18.075659, 59.320251), (18.085734, 59.336136), 
     (18.033047, 59.337472), (18.027979, 59.327722)
 ]
-EXCLUSION_NO_FLY_ZONE = [R113_NO_FLY_STATUS] 
+EXCLUSION_NO_FLY_ZONE = [R113_NO_FLY_STATUS]
+
+NO_FLY_PENALTY_DISTANCE_KM = 1.0
 
 SPEED_DRONE = 50 # assumptions of crusiing speed of 50 km / hr
 SPEED_MOPED = 15 # assumptiosn of average speed of 15 km / hr
@@ -62,6 +64,8 @@ MOPED_DELIVERY_TIME = "moped_delivery_time"
 DRONE_DELIVERY_TIME = "drone_delivery_time"
 MOPED_UNAVAILABILITY_TIME = "moped_unavailability_time"
 DRONE_UNAVAILABILITY_TIME = "drone_unavailability_time"
+PENALIZED_DISTANCE = "penalized_distance"
+PENALIZED_DRONE_UNAVAILABILITY_TIME = "penalized_drone_unavailability_time"
 NO_FLY_STATUS = "no_fly_status"
 
 # NO FLY STATUS
