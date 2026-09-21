@@ -24,7 +24,7 @@ def _bucket_orders(restaurant_df):
     return buckets
 
 
-def find_minimal_mixed_fleet(delivery_df):
+def find_minimal_mixed_fleet(delivery_df, use_no_fly_zone=True):
     mixed_fleet = {}
 
     for restaurant, restaurant_df in delivery_df.groupby(constants.RESTAURANT_NAME):
@@ -74,7 +74,7 @@ def find_minimal_mixed_fleet(delivery_df):
                     ) == 1
                 )
 
-                if order[constants.NO_FLY_STATUS] == constants.STATUS_NOGO:
+                if use_no_fly_zone and order[constants.NO_FLY_STATUS] == constants.STATUS_NOGO:
                     for fleet_index in range(max_orders_in_bucket):
                         model.addConstr(drone_assignment[order_index, fleet_index] == 0)
 
@@ -121,9 +121,12 @@ def find_minimal_mixed_fleet(delivery_df):
     return mixed_fleet
 
 
-def analyse_mixed_fleet(fname):
+def analyse_mixed_fleet(fname, use_no_fly_zone=True):
     delivery_df = pd.read_csv(fname)
-    mixed_fleet = find_minimal_mixed_fleet(delivery_df)
+    mixed_fleet = find_minimal_mixed_fleet(
+        delivery_df,
+        use_no_fly_zone=use_no_fly_zone,
+    )
 
     for restaurant, fleet in mixed_fleet.items():
         print(
@@ -134,10 +137,15 @@ def analyse_mixed_fleet(fname):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-f", default="delivery_locations.csv", help="Input filename")
+parser.add_argument(
+    "--ignore-no-fly-zone",
+    action="store_true",
+    help="Ignore the no-fly-zone restriction when assigning drones.",
+)
 args = parser.parse_args()
 
 if Path(args.f).name != args.f:
     parser.error("-f must contain a filename only, not a directory path")
 
 input_file = Path(__file__).resolve().parent.parent / "data" / args.f
-analyse_mixed_fleet(input_file)
+analyse_mixed_fleet(input_file, use_no_fly_zone=not args.ignore_no_fly_zone)

@@ -48,12 +48,12 @@ def _bucket_orders(restaurant_df):
     return buckets
 
 
-def filter_impossible_orders(delivery_df, fleet_type):
+def filter_impossible_orders(delivery_df, fleet_type, use_no_fly_zone=True):
     if fleet_type == "drone":
-        df = delivery_df[
-            (delivery_df[constants.DRONE_UNAVAILABILITY_TIME] <= constants.TIME_BUCKET)
-            & (delivery_df[constants.NO_FLY_STATUS] != constants.STATUS_NOGO)
-        ]
+        mask = delivery_df[constants.DRONE_UNAVAILABILITY_TIME] <= constants.TIME_BUCKET
+        if use_no_fly_zone:
+            mask &= delivery_df[constants.NO_FLY_STATUS] != constants.STATUS_NOGO
+        df = delivery_df[mask]
     elif fleet_type == "moped":
         df = delivery_df[
             delivery_df[constants.MOPED_UNAVAILABILITY_TIME] <= constants.TIME_BUCKET
@@ -65,10 +65,14 @@ def filter_impossible_orders(delivery_df, fleet_type):
     return df, dropped_orders
 
 
-def find_minimal_fleet(delivery_df, fleet_type):
+def find_minimal_fleet(delivery_df, fleet_type, use_no_fly_zone=True):
     min_fleet = {}
 
-    delivery_df, dropped_orders = filter_impossible_orders(delivery_df, fleet_type)
+    delivery_df, dropped_orders = filter_impossible_orders(
+        delivery_df,
+        fleet_type,
+        use_no_fly_zone=use_no_fly_zone,
+    )
     print(f"WARNING: {dropped_orders} orders were dropped.")
 
     for restaurant, restaurant_df in delivery_df.groupby(constants.RESTAURANT_NAME):
@@ -171,10 +175,18 @@ def find_minimal_fleet(delivery_df, fleet_type):
     return min_fleet
 
 
-def analyse_minimum_fleets(fname):
+def analyse_minimum_fleets(fname, use_no_fly_zone=True):
     delivery_df = pd.read_csv(fname)
-    min_drone_fleet = find_minimal_fleet(delivery_df, fleet_type="drone")
-    min_moped_fleet = find_minimal_fleet(delivery_df, fleet_type="moped")
+    min_drone_fleet = find_minimal_fleet(
+        delivery_df,
+        fleet_type="drone",
+        use_no_fly_zone=use_no_fly_zone,
+    )
+    min_moped_fleet = find_minimal_fleet(
+        delivery_df,
+        fleet_type="moped",
+        use_no_fly_zone=use_no_fly_zone,
+    )
 
     for restaurant, min_fleets in min_drone_fleet.items():
         print(f"Restaurant: {restaurant}, Minimum Drones Required: {min_fleets}")
@@ -184,10 +196,15 @@ def analyse_minimum_fleets(fname):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-f", default="delivery_locations.csv", help="Input filename")
+parser.add_argument(
+    "--ignore-no-fly-zone",
+    action="store_true",
+    help="Ignore the no-fly-zone restriction when checking drone feasibility.",
+)
 args = parser.parse_args()
 
 if Path(args.f).name != args.f:
     parser.error("-f must contain a filename only, not a directory path")
 
 input_file = Path(__file__).resolve().parent.parent / "data" / args.f
-analyse_minimum_fleets(input_file)
+analyse_minimum_fleets(input_file, use_no_fly_zone=not args.ignore_no_fly_zone)
