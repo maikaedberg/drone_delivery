@@ -51,7 +51,9 @@ def _bucket_orders(restaurant_df):
     for bucket_index in range(total_num_buckets):
         start_index = bucket_index * bucket_size
         end_index = (bucket_index + 1) * bucket_size
-        bucket = restaurant_df.iloc[start_index:end_index].reset_index(drop=True)
+        bucket = restaurant_df.iloc[start_index:end_index].copy()
+        bucket["_order_index"] = bucket.index
+        bucket = bucket.reset_index(drop=True)
         if len(bucket) > 0:
             buckets.append(bucket)
     return buckets
@@ -78,7 +80,7 @@ def _count_moped_fleets(restaurant_df):
     return len(bins)
 
 
-def find_minimal_mixed_fleet(delivery_df, use_no_fly_zone=True):
+def find_minimal_mixed_fleet(delivery_df, use_no_fly_zone=True, give_assignment=False):
     mixed_fleet = {}
 
     for restaurant, restaurant_df in delivery_df.groupby(constants.RESTAURANT_NAME):
@@ -89,6 +91,11 @@ def find_minimal_mixed_fleet(delivery_df, use_no_fly_zone=True):
                 "mopeds": moped_fleet_count,
                 "hourly_cost": round(moped_fleet_count * constants.MOPED_COST_PER_HOUR),
             }
+            if give_assignment:
+                mixed_fleet[restaurant]["assignments"] = [
+                    {"order_index": order_index, "vehicle": "moped"}
+                    for order_index in restaurant_df.index
+                ]
             continue
 
         if not use_no_fly_zone:
@@ -125,6 +132,7 @@ def find_minimal_mixed_fleet(delivery_df, use_no_fly_zone=True):
                     fleet[fleet_index] >= fleet[fleet_index + 1]
                 )
 
+        assignment_variables = []
         for bucket_index, bucket in enumerate(buckets):
             drone_assignment = model.addVars(
                 len(bucket),
@@ -138,6 +146,7 @@ def find_minimal_mixed_fleet(delivery_df, use_no_fly_zone=True):
                 vtype=gp.GRB.BINARY,
                 name=f"moped_assignment_{bucket_index}",
             )
+            assignment_variables.append((bucket, drone_assignment, moped_assignment))
 
             for order_position, order in bucket.iterrows():
                 model.addConstr(
@@ -185,16 +194,54 @@ def find_minimal_mixed_fleet(delivery_df, use_no_fly_zone=True):
             "mopeds": num_mopeds,
             "hourly_cost": round(model.ObjVal),
         }
+        if give_assignment:
+            assignments = []
+            for bucket, drone_assignment, _ in assignment_variables:
+                for order_position, order in bucket.iterrows():
+                    vehicle = "moped"
+                    for fleet_index in range(max_orders_in_bucket):
+                        if drone_assignment[order_position, fleet_index].X > 0.5:
+                            vehicle = "drone"
+                            break
+                    assignments.append(
+                        {"order_index": order["_order_index"], "vehicle": vehicle}
+                    )
+            mixed_fleet[restaurant]["assignments"] = assignments
 
     return mixed_fleet
 
 
-def analyse_mixed_fleet(fname, use_no_fly_zone=True):
+def analyse_mixed_fleet(
+    fname,
+    use_no_fly_zone=True,
+    give_assignment=False,
+    assignment_file="assignments.csv",
+):
     delivery_df = pd.read_csv(fname)
     mixed_fleet = find_minimal_mixed_fleet(
         delivery_df,
         use_no_fly_zone=use_no_fly_zone,
+        give_assignment=give_assignment,
     )
+
+    if give_assignment:
+        assignment_rows = []
+        for restaurant, fleet in mixed_fleet.items():
+            for assignment in fleet["assignments"]:
+                order = delivery_df.loc[assignment["order_index"]]
+                assignment_rows.append(
+                    {
+                        "restaurant": restaurant,
+                        "order_index": assignment["order_index"],
+                        "latitude": order[constants.LATITUDE],
+                        "longitude": order[constants.LONGITUDE],
+                        "vehicle": assignment["vehicle"],
+                    }
+                )
+        pd.DataFrame(assignment_rows).sort_values(
+            [constants.RESTAURANT_NAME, "order_index"]
+        ).to_csv(assignment_file, index=False)
+        print(f"Assignments written to {assignment_file}")
 
     for restaurant, fleet in mixed_fleet.items():
         print(
@@ -209,11 +256,29 @@ parser.add_argument(
     action="store_true",
     help="Ignore the no-fly-zone restriction when assigning drones.",
 )
+parser.add_argument(
+    "--give-assignment",
+    action="store_true",
+    help="Write each order's vehicle assignment to a CSV file.",
+)
+parser.add_argument(
+    "--assignment-file",
+    default="assignments.csv",
+    help="Output filename for order assignments.",
+)
 args = parser.parse_args()
 
 if Path(args.f).name != args.f:
     parser.error("-f must contain a filename only, not a directory path")
+if Path(args.assignment_file).name != args.assignment_file:
+    parser.error("--assignment-file must contain a filename only, not a directory path")
 
 input_file = Path(__file__).resolve().parent.parent / "data" / args.f
-analyse_mixed_fleet(input_file, use_no_fly_zone=not args.ignore_no_fly_zone)
+assignment_file = Path(__file__).resolve().parent.parent / "data" / args.assignment_file
+analyse_mixed_fleet(
+    input_file,
+    use_no_fly_zone=not args.ignore_no_fly_zone,
+    give_assignment=args.give_assignment,
+    assignment_file=assignment_file,
+)
 
