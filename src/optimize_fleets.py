@@ -48,30 +48,31 @@ def _bucket_orders(restaurant_df):
     return buckets
 
 
-def filter_impossible_orders(delivery_df, fleet_type, use_no_fly_zone=True):
+def filter_impossible_orders(delivery_df, service_time_col):
+    filtered_df = delivery_df[
+        delivery_df[service_time_col].notna()
+        & (delivery_df[service_time_col] <= constants.TIME_BUCKET)
+    ]
+    dropped_orders = len(delivery_df) - len(filtered_df)
+    return filtered_df, dropped_orders
+
+def get_service_time_col(fleet_type, use_no_fly_zone):
+
     if fleet_type == "drone":
-        mask = delivery_df[constants.DRONE_UNAVAILABILITY_TIME] <= constants.TIME_BUCKET
-        if use_no_fly_zone:
-            mask &= delivery_df[constants.NO_FLY_STATUS] != constants.STATUS_NOGO
-        df = delivery_df[mask]
-    elif fleet_type == "moped":
-        df = delivery_df[
-            delivery_df[constants.MOPED_UNAVAILABILITY_TIME] <= constants.TIME_BUCKET
-        ]
+        if not use_no_fly_zone:
+            return constants.DRONE_UNAVAILABILITY_TIME
+        else:
+            return constants.PENALIZED_DRONE_UNAVAILABILITY_TIME
     else:
-        raise ValueError("Invalid fleet type. Choose either 'drone' or 'moped'.")
-
-    dropped_orders = len(delivery_df) - len(df)
-    return df, dropped_orders
-
+        return constants.MOPED_UNAVAILABILITY_TIME
 
 def find_minimal_fleet(delivery_df, fleet_type, use_no_fly_zone=True):
     min_fleet = {}
 
+    service_time_col = get_service_time_col(fleet_type, use_no_fly_zone)
     delivery_df, dropped_orders = filter_impossible_orders(
         delivery_df,
-        fleet_type,
-        use_no_fly_zone=use_no_fly_zone,
+        service_time_col
     )
     print(f"WARNING: {dropped_orders} orders were dropped.")
 
@@ -84,10 +85,7 @@ def find_minimal_fleet(delivery_df, fleet_type, use_no_fly_zone=True):
         for df in _bucket_orders(restaurant_df):
             n_orders = len(df)
 
-            if fleet_type == "drone":
-                service_time = df[constants.DRONE_UNAVAILABILITY_TIME].tolist()
-            else:
-                service_time = df[constants.MOPED_UNAVAILABILITY_TIME].tolist()
+            service_time = df[service_time_col].to_list()
 
             service_time.sort(reverse=True)
             greedy_bins = greedy_packing(service_time, constants.TIME_BUCKET)
@@ -165,10 +163,7 @@ def find_minimal_fleet(delivery_df, fleet_type, use_no_fly_zone=True):
                 min_num_fleet = round(model.ObjVal)
 
             if restaurant in min_fleet:
-                min_fleet[restaurant] = max(
-                    min_fleet[restaurant],
-                    min_num_fleet
-                )
+                min_fleet[restaurant] = max(min_fleet[restaurant], min_num_fleet)
             else:
                 min_fleet[restaurant] = min_num_fleet
 

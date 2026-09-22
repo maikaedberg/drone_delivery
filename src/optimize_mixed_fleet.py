@@ -7,39 +7,6 @@ import pandas as pd
 import constants
 
 
-def _drone_time_for_order(order):
-    if (
-        constants.PENALIZED_DRONE_UNAVAILABILITY_TIME in order.index
-        and pd.notna(order[constants.PENALIZED_DRONE_UNAVAILABILITY_TIME])
-    ):
-        return float(order[constants.PENALIZED_DRONE_UNAVAILABILITY_TIME])
-
-    if pd.notna(order.get(constants.DRONE_UNAVAILABILITY_TIME)):
-        return float(order[constants.DRONE_UNAVAILABILITY_TIME])
-
-    if pd.notna(order.get(constants.DRONE_DELIVERY_DISTANCE)):
-        return float(order[constants.DRONE_DELIVERY_DISTANCE]) / constants.SPEED_DRONE * 60
-
-    return 0.0
-
-
-def _moped_time_for_order(order):
-    if pd.notna(order.get(constants.MOPED_UNAVAILABILITY_TIME)):
-        return float(order[constants.MOPED_UNAVAILABILITY_TIME])
-
-    if pd.notna(order.get(constants.MOPED_DELIVERY_DISTANCE)):
-        return float(order[constants.MOPED_DELIVERY_DISTANCE]) / constants.SPEED_MOPED * 60
-
-    return 0.0
-
-
-def _drone_unavailability_from_geodesic(geodesic_distance_km):
-    flight_distance_km = float(geodesic_distance_km or 0.0) * 2
-    flight_time = flight_distance_km / constants.SPEED_DRONE * 60
-    charge_time = (flight_distance_km / constants.FULL_CHARGE_DIST) * constants.FULL_CHARGE_TIME
-    return flight_time + charge_time + 1
-
-
 def _bucket_orders(restaurant_df):
     total_num_buckets = constants.TOTAL_TIME // constants.TIME_BUCKET
     bucket_size = (
@@ -82,131 +49,152 @@ def _count_moped_fleets(restaurant_df):
 
 def find_minimal_mixed_fleet(delivery_df, use_no_fly_zone=True, give_assignment=False):
     mixed_fleet = {}
+    drone_time_col = (
+        constants.PENALIZED_DRONE_UNAVAILABILITY_TIME
+        if use_no_fly_zone
+        else constants.DRONE_UNAVAILABILITY_TIME
+    )
 
     for restaurant, restaurant_df in delivery_df.groupby(constants.RESTAURANT_NAME):
-        if use_no_fly_zone and (restaurant_df[constants.NO_FLY_STATUS] == constants.STATUS_NOGO).all():
-            moped_fleet_count = _count_moped_fleets(restaurant_df)
-            mixed_fleet[restaurant] = {
-                "drones": 0,
-                "mopeds": moped_fleet_count,
-                "hourly_cost": round(moped_fleet_count * constants.MOPED_COST_PER_HOUR),
-            }
-            if give_assignment:
-                mixed_fleet[restaurant]["assignments"] = [
-                    {"order_index": order_index, "vehicle": "moped"}
-                    for order_index in restaurant_df.index
-                ]
-            continue
-
-        if not use_no_fly_zone:
-            restaurant_df = restaurant_df.copy()
-            restaurant_df[constants.NO_FLY_STATUS] = constants.STATUS_CLEAR
-            restaurant_df[constants.DRONE_DELIVERY_DISTANCE] = restaurant_df[constants.GEODESIC_DIST].fillna(0)
-            restaurant_df[constants.DRONE_UNAVAILABILITY_TIME] = restaurant_df[constants.GEODESIC_DIST].apply(
-                _drone_unavailability_from_geodesic
-            )
-            restaurant_df[constants.PENALIZED_DRONE_UNAVAILABILITY_TIME] = restaurant_df[
-                constants.DRONE_UNAVAILABILITY_TIME
-            ]
-
-        buckets = [_bucket.reset_index(drop=True) for _bucket in _bucket_orders(restaurant_df)]
-        max_orders_in_bucket = max(len(bucket) for bucket in buckets)
-        model = gp.Model(f"mixed_delivery_{restaurant}")
-        model.Params.OutputFlag = 0
-        model.Params.TimeLimit = 20
-
-        drone_fleet = model.addVars(
-            max_orders_in_bucket,
-            vtype=gp.GRB.BINARY,
-            name="drone_fleet",
-        )
-        moped_fleet = model.addVars(
-            max_orders_in_bucket,
-            vtype=gp.GRB.BINARY,
-            name="moped_fleet",
+        print(
+            f"Optimizing for restaurant {restaurant} with "
+            f"{len(restaurant_df)} orders"
         )
 
-        for fleet in (drone_fleet, moped_fleet):
-            for fleet_index in range(max_orders_in_bucket - 1):
-                model.addConstr(
-                    fleet[fleet_index] >= fleet[fleet_index + 1]
-                )
+        restaurant_result = {
+            "drones": 0,
+            "mopeds": 0,
+            "hourly_cost": 0,
+        }
+        assignments = []
 
-        assignment_variables = []
-        for bucket_index, bucket in enumerate(buckets):
-            drone_assignment = model.addVars(
-                len(bucket),
-                max_orders_in_bucket,
+        for bucket in _bucket_orders(restaurant_df):
+            n_orders = len(bucket)
+            n_possible_fleets = n_orders
+            model = gp.Model(f"mixed_delivery_{restaurant}")
+            model.Params.OutputFlag = 0
+            model.Params.TimeLimit = 20
+
+            drone_fleet = model.addVars(
+                n_possible_fleets,
                 vtype=gp.GRB.BINARY,
-                name=f"drone_assignment_{bucket_index}",
+                name="drone_fleet",
+            )
+            moped_fleet = model.addVars(
+                n_possible_fleets,
+                vtype=gp.GRB.BINARY,
+                name="moped_fleet",
+            )
+
+            for fleet in (drone_fleet, moped_fleet):
+                for fleet_index in range(n_possible_fleets - 1):
+                    model.addConstr(fleet[fleet_index] >= fleet[fleet_index + 1])
+
+            drone_assignment = model.addVars(
+                n_orders,
+                n_possible_fleets,
+                vtype=gp.GRB.BINARY,
+                name="drone_assignment",
             )
             moped_assignment = model.addVars(
-                len(bucket),
-                max_orders_in_bucket,
+                n_orders,
+                n_possible_fleets,
                 vtype=gp.GRB.BINARY,
-                name=f"moped_assignment_{bucket_index}",
+                name="moped_assignment",
             )
-            assignment_variables.append((bucket, drone_assignment, moped_assignment))
+            drone_times = bucket[drone_time_col].fillna(0).tolist()
+            drone_eligible = bucket[drone_time_col].notna().tolist()
+            moped_times = bucket[constants.MOPED_UNAVAILABILITY_TIME].tolist()
 
-            for order_position, order in bucket.iterrows():
-                model.addConstr(
-                    gp.quicksum(
-                        drone_assignment[order_position, fleet_index]
-                        + moped_assignment[order_position, fleet_index]
-                        for fleet_index in range(max_orders_in_bucket)
-                    ) == 1
-                )
-
-                if use_no_fly_zone and order[constants.NO_FLY_STATUS] == constants.STATUS_NOGO:
-                    for fleet_index in range(max_orders_in_bucket):
-                        model.addConstr(drone_assignment[order_position, fleet_index] == 0)
-
-            for fleet_index in range(max_orders_in_bucket):
+            for order_index in range(n_orders):
                 model.addConstr(
                     gp.quicksum(
                         drone_assignment[order_index, fleet_index]
-                        * _drone_time_for_order(bucket.iloc[order_index])
-                        for order_index in range(len(bucket))
+                        + moped_assignment[order_index, fleet_index]
+                        for fleet_index in range(n_possible_fleets)
+                    ) == 1
+                )
+
+                if use_no_fly_zone and not drone_eligible[order_index]:
+                    for fleet_index in range(n_possible_fleets):
+                        model.addConstr(
+                            drone_assignment[order_index, fleet_index] == 0
+                        )
+
+            for fleet_index in range(n_possible_fleets):
+                model.addConstr(
+                    gp.quicksum(
+                        drone_assignment[order_index, fleet_index]
+                        * drone_times[order_index]
+                        for order_index in range(n_orders)
                     ) <= constants.TIME_BUCKET * drone_fleet[fleet_index]
                 )
                 model.addConstr(
                     gp.quicksum(
                         moped_assignment[order_index, fleet_index]
-                        * _moped_time_for_order(bucket.iloc[order_index])
-                        for order_index in range(len(bucket))
+                        * moped_times[order_index]
+                        for order_index in range(n_orders)
                     ) <= constants.TIME_BUCKET * moped_fleet[fleet_index]
                 )
 
-        model.setObjective(
-            constants.DRONE_COST_PER_HOUR * drone_fleet.sum()
-            + constants.MOPED_COST_PER_HOUR * moped_fleet.sum(),
-            gp.GRB.MINIMIZE,
-        )
-        model.optimize()
+            model.setObjective(
+                constants.DRONE_COST_PER_HOUR * drone_fleet.sum()
+                + constants.MOPED_COST_PER_HOUR * moped_fleet.sum(),
+                gp.GRB.MINIMIZE,
+            )
+            model.optimize()
 
-        if model.SolCount == 0:
-            raise RuntimeError(f"Gurobi did not find a feasible solution for {restaurant}")
+            if model.SolCount == 0:
+                raise RuntimeError(
+                    f"Gurobi did not find a feasible solution for {restaurant}"
+                )
 
-        num_drones = round(sum(drone_fleet[index].X for index in range(max_orders_in_bucket)))
-        num_mopeds = round(sum(moped_fleet[index].X for index in range(max_orders_in_bucket)))
-        mixed_fleet[restaurant] = {
-            "drones": num_drones,
-            "mopeds": num_mopeds,
-            "hourly_cost": round(model.ObjVal),
-        }
-        if give_assignment:
-            assignments = []
-            for bucket, drone_assignment, _ in assignment_variables:
-                for order_position, order in bucket.iterrows():
+            num_drones = round(
+                sum(
+                    drone_fleet[index].X
+                    for index in range(n_possible_fleets)
+                )
+            )
+            num_mopeds = round(
+                sum(
+                    moped_fleet[index].X
+                    for index in range(n_possible_fleets)
+                )
+            )
+            restaurant_result["drones"] = max(
+                restaurant_result["drones"],
+                num_drones,
+            )
+            restaurant_result["mopeds"] = max(
+                restaurant_result["mopeds"],
+                num_mopeds,
+            )
+            restaurant_result["hourly_cost"] = round(
+                restaurant_result["drones"] * constants.DRONE_COST_PER_HOUR
+                + restaurant_result["mopeds"] * constants.MOPED_COST_PER_HOUR
+            )
+
+            if give_assignment:
+                for order_index, order in bucket.iterrows():
                     vehicle = "moped"
-                    for fleet_index in range(max_orders_in_bucket):
-                        if drone_assignment[order_position, fleet_index].X > 0.5:
+                    for fleet_index in range(n_possible_fleets):
+                        if drone_assignment[order_index, fleet_index].X > 0.5:
                             vehicle = "drone"
                             break
                     assignments.append(
-                        {"order_index": order["_order_index"], "vehicle": vehicle}
+                        {
+                            "order_index": order["_order_index"],
+                            "vehicle": vehicle,
+                        }
                     )
-            mixed_fleet[restaurant]["assignments"] = assignments
+
+                if give_assignment:
+                    mixed_fleet[restaurant] = {
+                        **restaurant_result,
+                        "assignments": assignments,
+                    }
+                else:
+                    mixed_fleet[restaurant] = restaurant_result
 
     return mixed_fleet
 
@@ -248,6 +236,7 @@ def analyse_mixed_fleet(
             f"Restaurant: {restaurant}, Drones: {fleet['drones']}, "
             f"Mopeds: {fleet['mopeds']}, Hourly Cost: {fleet['hourly_cost']} SEK"
         )
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-f", default="delivery_locations.csv", help="Input filename")

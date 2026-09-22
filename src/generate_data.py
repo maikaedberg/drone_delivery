@@ -183,7 +183,9 @@ def calculate_drone_unavailability_time(drone_flight_distance):
     return total_unavailability_time
 
 def get_drone_unavailability_time(drone_flight_distances):
-    return [calculate_drone_unavailability_time(d) for d in drone_flight_distances]
+    return [
+        calculate_drone_unavailability_time(d) if not np.isnan(d) else np.nan for d in drone_flight_distances 
+    ]
 
 def check_nofly_status(resto_lat, resto_lon, order_lat, order_lon, exclusion_zones):
     restaurant_point = Point(resto_lon, resto_lat)
@@ -227,25 +229,23 @@ def generate_delivery_data(N, restaurants_dict, area, fname):
         no_fly_status.append(check_nofly_status(resto_lat, resto_lon, order_lat, order_lon, exclusion_polygons))
 
     drone_delivery_distances = geodesic_dists.copy()
-    penalized_drone_distances = geodesic_dists.copy()
+    penalized_drone_delivery_distances = geodesic_dists.copy()
     for i in range(N):
         if no_fly_status[i] == constants.STATUS_NOGO:
-            drone_delivery_distances[i] = np.nan
-            penalized_drone_distances[i] = geodesic_dists[i] + constants.NO_FLY_PENALTY_DISTANCE_KM
+            penalized_drone_delivery_distances[i] = np.nan
         elif no_fly_status[i] == constants.STATUS_INTERSECT:
-            drone_delivery_distances[i] += 1
-            penalized_drone_distances[i] = geodesic_dists[i] + constants.NO_FLY_PENALTY_DISTANCE_KM
+            penalized_drone_delivery_distances[i] = geodesic_dists[i] + constants.NO_FLY_PENALTY_DISTANCE_KM
         else:
-            penalized_drone_distances[i] = geodesic_dists[i]
+            penalized_drone_delivery_distances[i] = geodesic_dists[i]
 
     moped_travel_distances = [d*2 for d in moped_delivery_distances]
     drone_flight_distances = [d*2 for d in drone_delivery_distances]
-    penalized_drone_flight_distances = [d*2 for d in penalized_drone_distances]
+    penalized_drone_flight_distances = [d*2 for d in penalized_drone_delivery_distances]
 
     # Step 4: Generate moped and drone delivery times
     moped_delivery_time = get_moped_delivery_time(moped_delivery_distances)
     drone_delivery_time = get_drone_delivery_time(drone_delivery_distances)
-    penalized_drone_delivery_time = get_drone_delivery_time(penalized_drone_distances)
+    penalized_drone_delivery_time = get_drone_delivery_time(penalized_drone_flight_distances)
 
     # Step 5: Generate unavailability time
     moped_unavailability_time = get_moped_unavailability_time(moped_travel_distances)
@@ -266,7 +266,7 @@ def generate_delivery_data(N, restaurants_dict, area, fname):
         constants.DRONE_DELIVERY_TIME: drone_delivery_time,
         constants.MOPED_UNAVAILABILITY_TIME: moped_unavailability_time,
         constants.DRONE_UNAVAILABILITY_TIME: drone_unavailability_time,
-        constants.PENALIZED_DISTANCE: penalized_drone_distances,
+        constants.PENALIZED_DISTANCE: penalized_drone_flight_distances,
         constants.PENALIZED_DRONE_UNAVAILABILITY_TIME: penalized_drone_unavailability_time,
         constants.NO_FLY_STATUS: no_fly_status
     })
