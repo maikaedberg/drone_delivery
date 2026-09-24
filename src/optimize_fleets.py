@@ -30,24 +30,40 @@ def greedy_packing(time_list, time_max):
     return bins
 
 
-def _bucket_orders(restaurant_df):
+def assign_buckets(delivery_df):
     total_num_buckets = constants.TOTAL_TIME // constants.TIME_BUCKET
-    bucket_size = (
-        len(restaurant_df) // total_num_buckets
-        + (len(restaurant_df) % total_num_buckets > 0)
+    delivery_df = delivery_df.copy()
+    delivery_df["_bucket_index"] = pd.Series(
+        pd.NA,
+        index=delivery_df.index,
+        dtype="Int64",
     )
 
-    buckets = []
-    for bucket_index in range(total_num_buckets):
-        start_index = bucket_index * bucket_size
-        end_index = (bucket_index + 1) * bucket_size
-        bucket = restaurant_df.iloc[start_index:end_index].reset_index(drop=True)
-        if len(bucket) > 0:
-            buckets.append(bucket)
+    for _, restaurant_df in delivery_df.groupby(
+        constants.RESTAURANT_NAME,
+        sort=False,
+    ):
+        bucket_size = (
+            len(restaurant_df) // total_num_buckets
+            + (len(restaurant_df) % total_num_buckets > 0)
+        )
 
-    return buckets
+        for bucket_index in range(total_num_buckets):
+            start_index = bucket_index * bucket_size
+            end_index = (bucket_index + 1) * bucket_size
+            order_indices = restaurant_df.iloc[start_index:end_index].index
+            delivery_df.loc[order_indices, "_bucket_index"] = bucket_index
 
+    return delivery_df
 
+def greedy_num_fleets(delivery_df, service_time_col):
+    num_fleets = 0
+    for _, bucket_df in delivery_df.groupby("_bucket_index"):
+        service_time = bucket_df[service_time_col].to_list()
+        greedy_bins = greedy_packing(service_time, constants.TIME_BUCKET)
+        num_fleets = max(len(greedy_bins), num_fleets)
+    return num_fleets
+        
 def filter_impossible_orders(delivery_df, service_time_col):
     filtered_df = delivery_df[
         delivery_df[service_time_col].notna()
@@ -74,6 +90,7 @@ def find_minimal_fleet(delivery_df, fleet_type, use_no_fly_zone=True):
         delivery_df,
         service_time_col
     )
+    
     print(f"WARNING: {dropped_orders} orders were dropped.")
 
     for restaurant, restaurant_df in delivery_df.groupby(constants.RESTAURANT_NAME):
@@ -81,91 +98,93 @@ def find_minimal_fleet(delivery_df, fleet_type, use_no_fly_zone=True):
             f"Optimizing for restaurant {restaurant} with "
             f"{len(restaurant_df)} orders, fleet_type={fleet_type}"
         )
+        restaurant_df = assign_buckets(restaurant_df).reset_index(drop=True)
 
-        for df in _bucket_orders(restaurant_df):
-            n_orders = len(df)
+        n_orders = len(restaurant_df)
 
-            service_time = df[service_time_col].to_list()
+        service_time = restaurant_df[service_time_col].to_list()
 
-            service_time.sort(reverse=True)
-            greedy_bins = greedy_packing(service_time, constants.TIME_BUCKET)
+        n_possible_fleets = greedy_num_fleets(restaurant_df, service_time_col)
 
-            if restaurant in min_fleet:
-                if min_fleet[restaurant] > len(greedy_bins):
-                    continue
-
-            n_possible_fleets = len(greedy_bins)
-            lower_bound = (
-                sum(service_time) + constants.TIME_BUCKET - 1
-            ) // constants.TIME_BUCKET
-
-            if n_possible_fleets == lower_bound:
-                min_num_fleet = lower_bound
-            else:
-                model = gp.Model("delivery")
-                model.Params.OutputFlag = 0
-                model.Params.TimeLimit = 20
-
-                x = model.addVars(
-                    n_orders,
-                    n_possible_fleets,
-                    vtype=gp.GRB.BINARY,
-                    name="x"
+        lower_bound = (
+            max(
+                (
+                    bucket_df[service_time_col].sum()
+                    + constants.TIME_BUCKET
+                    - 1
                 )
-                y = model.addVars(
-                    n_possible_fleets,
-                    vtype=gp.GRB.BINARY,
-                    name="y"
+                // constants.TIME_BUCKET
+                for _, bucket_df in restaurant_df.groupby("_bucket_index")
+            )
+        )
+
+
+        model = gp.Model("delivery")
+        model.Params.OutputFlag = 0
+
+        x = model.addVars(
+            n_orders,
+            n_possible_fleets,
+            vtype=gp.GRB.BINARY,
+            name="x"
+        )
+        y = model.addVars(
+            n_possible_fleets,
+            vtype=gp.GRB.BINARY,
+            name="y"
+        )
+
+        for order_index in range(n_orders):
+            model.addConstr(
+                gp.quicksum(
+                    x[order_index, fleet_index]
+                    for fleet_index in range(n_possible_fleets)
+                ) == 1
+            )
+
+        for order_index in range(n_orders):
+            for fleet_index in range(n_possible_fleets):
+                model.addConstr(
+                    x[order_index, fleet_index] <= y[fleet_index]
                 )
 
-                for order_index in range(n_orders):
-                    model.addConstr(
-                        gp.quicksum(
-                            x[order_index, fleet_index]
-                            for fleet_index in range(n_possible_fleets)
-                        ) == 1
-                    )
-
-                for order_index in range(n_orders):
-                    for fleet_index in range(n_possible_fleets):
-                        model.addConstr(
-                            x[order_index, fleet_index] <= y[fleet_index]
-                        )
-
-                for fleet_index in range(n_possible_fleets - 1):
-                    model.addConstr(y[fleet_index] >= y[fleet_index + 1])
-
+        for _, bucket_df in restaurant_df.groupby("_bucket_index"):
+            for fleet_index in range(n_possible_fleets):
                 model.addConstr(
                     gp.quicksum(
-                        y[fleet_index]
-                        for fleet_index in range(n_possible_fleets)
-                    ) >= lower_bound
+                        service_time[order_index]
+                        * x[order_index, fleet_index]
+                        for order_index in bucket_df.index
+                    )
+                    <= constants.TIME_BUCKET * y[fleet_index]
                 )
 
-                for fleet_index, bucket in enumerate(greedy_bins):
-                    y[fleet_index].Start = 1
-                    for order_index in bucket:
-                        x[order_index, fleet_index].Start = 1
+        for fleet_index in range(n_possible_fleets - 1):
+            model.addConstr(y[fleet_index] >= y[fleet_index + 1])
 
-                model.setObjective(
-                    gp.quicksum(
-                        y[fleet_index]
-                        for fleet_index in range(n_possible_fleets)
-                    ),
-                    gp.GRB.MINIMIZE
-                )
-                model.Params.BestObjStop = lower_bound
-                model.optimize()
+        model.addConstr(
+            gp.quicksum(
+                y[fleet_index]
+                for fleet_index in range(n_possible_fleets)
+            ) >= lower_bound
+        )
 
-                if model.SolCount == 0:
-                    raise RuntimeError("Gurobi did not find a feasible solution")
+        model.setObjective(
+            gp.quicksum(
+                y[fleet_index]
+                for fleet_index in range(n_possible_fleets)
+            ),
+            gp.GRB.MINIMIZE
+        )
+        model.Params.BestObjStop = lower_bound
+        model.optimize()
 
-                min_num_fleet = round(model.ObjVal)
+        if model.SolCount == 0:
+            raise RuntimeError("Gurobi did not find a feasible solution")
 
-            if restaurant in min_fleet:
-                min_fleet[restaurant] = max(min_fleet[restaurant], min_num_fleet)
-            else:
-                min_fleet[restaurant] = min_num_fleet
+        min_num_fleet = round(model.ObjVal)
+
+        min_fleet[restaurant] = min_num_fleet
 
     return min_fleet
 
