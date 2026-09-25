@@ -63,6 +63,50 @@ def greedy_num_fleets(delivery_df, service_time_col):
         greedy_bins = greedy_packing(service_time, constants.TIME_BUCKET)
         num_fleets = max(len(greedy_bins), num_fleets)
     return num_fleets
+
+
+def greedy_mixed_start(
+    delivery_df,
+    drone_service_time_col,
+    moped_service_time_col,
+):
+    drone_assignments = {}
+    moped_assignments = {}
+    n_drones = 0
+    n_mopeds = 0
+
+    for _, bucket_df in delivery_df.groupby("_bucket_index"):
+        drone_orders = [
+            order_index
+            for order_index in bucket_df.index
+            if pd.notna(bucket_df.loc[order_index, drone_service_time_col])
+        ]
+        moped_orders = [
+            order_index
+            for order_index in bucket_df.index
+            if order_index not in drone_orders
+        ]
+
+        drone_bins = greedy_packing(
+            [bucket_df.loc[i, drone_service_time_col] for i in drone_orders],
+            constants.TIME_BUCKET,
+        )
+        moped_bins = greedy_packing(
+            [bucket_df.loc[i, moped_service_time_col] for i in moped_orders],
+            constants.TIME_BUCKET,
+        )
+
+        n_drones = max(n_drones, len(drone_bins))
+        n_mopeds = max(n_mopeds, len(moped_bins))
+
+        for fleet_index, bin_orders in enumerate(drone_bins):
+            for local_index in bin_orders:
+                drone_assignments[drone_orders[local_index]] = fleet_index
+        for fleet_index, bin_orders in enumerate(moped_bins):
+            for local_index in bin_orders:
+                moped_assignments[moped_orders[local_index]] = fleet_index
+
+    return n_drones, n_mopeds, drone_assignments, moped_assignments
         
 def filter_impossible_orders(df, drone_service_time_col, moped_service_time_col):
     filtered_df = df[
@@ -113,12 +157,23 @@ def find_minimal_fleet(delivery_df, use_no_fly_zone=True, restaurant=None):
         drone_service_time = restaurant_df[drone_service_time_col].fillna(0).to_list()
         moped_service_time = restaurant_df[moped_service_time_col].to_list()
         
-        n_possible_drones = greedy_num_fleets(restaurant_df, drone_service_time_col)
-        n_possible_mopeds = greedy_num_fleets(restaurant_df, moped_service_time_col)
+        n_possible_drones = greedy_num_fleets(
+            restaurant_df,
+            drone_service_time_col,
+        )
+        n_possible_mopeds = greedy_num_fleets(
+            restaurant_df,
+            moped_service_time_col,
+        )
+        _, _, drone_start, moped_start = greedy_mixed_start(
+            restaurant_df,
+            drone_service_time_col,
+            moped_service_time_col,
+        )
         
         model = gp.Model("delivery")
         model.Params.OutputFlag = 0
-        model.Params.TimeLimit = 20
+        model.Params.TimeLimit = 120
 
         x_drone = model.addVars(
             n_orders, n_possible_drones,
@@ -136,6 +191,19 @@ def find_minimal_fleet(delivery_df, use_no_fly_zone=True, restaurant=None):
             n_possible_mopeds,
             vtype=gp.GRB.BINARY, name="y_moped"
         )
+
+        for order_index, fleet_index in drone_start.items():
+            x_drone[order_index, fleet_index].Start = 1
+        for order_index, fleet_index in moped_start.items():
+            x_moped[order_index, fleet_index].Start = 1
+        for fleet_index in range(n_possible_drones):
+            y_drone[fleet_index].Start = int(
+                fleet_index < max(drone_start.values(), default=-1) + 1
+            )
+        for fleet_index in range(n_possible_mopeds):
+            y_moped[fleet_index].Start = int(
+                fleet_index < max(moped_start.values(), default=-1) + 1
+            )
 
         for order_index in range(n_orders):
             model.addConstr(
@@ -202,6 +270,12 @@ def find_minimal_fleet(delivery_df, use_no_fly_zone=True, restaurant=None):
 
         if model.SolCount == 0:
             raise RuntimeError("Gurobi did not find a feasible solution")
+
+        if model.Status == gp.GRB.TIME_LIMIT:
+            print(
+                f"Time limit reached for {restaurant}; "
+                f"best cost: {model.ObjVal}, bound: {model.ObjBound}"
+            )
 
         num_drones = round(
             sum(y_drone[fleet_index].X for fleet_index in range(n_possible_drones))
