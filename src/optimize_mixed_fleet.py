@@ -82,7 +82,7 @@ def get_service_time_col(fleet_type, use_no_fly_zone):
     else:
         return constants.MOPED_UNAVAILABILITY_TIME
 
-def find_minimal_fleet(delivery_df, use_no_fly_zone=True):
+def find_minimal_fleet(delivery_df, use_no_fly_zone=True, restaurant=None):
     min_fleet = {}
 
     drone_service_time_col = get_service_time_col(constants.FLEET_TYPE_DRONE, use_no_fly_zone)
@@ -91,6 +91,13 @@ def find_minimal_fleet(delivery_df, use_no_fly_zone=True):
         delivery_df,
         drone_service_time_col, moped_service_time_col
     )
+
+    if restaurant is not None:
+        delivery_df = delivery_df[
+            delivery_df[constants.RESTAURANT_NAME] == restaurant
+        ]
+        if delivery_df.empty:
+            raise ValueError(f"Restaurant not found: {restaurant}")
     
     print(f"WARNING: {dropped_orders} orders were dropped.")
 
@@ -212,11 +219,12 @@ def find_minimal_fleet(delivery_df, use_no_fly_zone=True):
     return min_fleet
 
 
-def analyse_minimum_fleets(fname, use_no_fly_zone=True):
+def analyse_minimum_fleets(fname, use_no_fly_zone=True, restaurant=None):
     delivery_df = pd.read_csv(fname)
     min_mixed_fleet = find_minimal_fleet(
         delivery_df,
         use_no_fly_zone=use_no_fly_zone,
+        restaurant=restaurant,
     )
 
     for restaurant, fleet in min_mixed_fleet.items():
@@ -234,10 +242,18 @@ parser.add_argument(
     action="store_true",
     help="Ignore the no-fly-zone restriction when checking drone feasibility.",
 )
+parser.add_argument(
+    "--restaurant",
+    help="Optimize only this restaurant.",
+)
 args = parser.parse_args()
 
 if Path(args.f).name != args.f:
     parser.error("-f must contain a filename only, not a directory path")
 
 input_file = Path(__file__).resolve().parent.parent / "data" / args.f
-analyse_minimum_fleets(input_file, use_no_fly_zone=not args.ignore_no_fly_zone)
+analyse_minimum_fleets(
+    input_file,
+    use_no_fly_zone=not args.ignore_no_fly_zone,
+    restaurant=args.restaurant,
+)
