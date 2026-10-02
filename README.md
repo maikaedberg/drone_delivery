@@ -44,4 +44,10 @@ To get the data from Table 6:
    python3 optimize_mixed_fleet.py -f delivery_locations.csv
 ```
 
+### Sensitivity Analysis
+To compare the mixed fleet assignments, testing the impact of varying the moped cost per hour is sufficient. This can be ran by
+```
+    python3 optimize_mixed_fleet.py -f delivery_locations.csv --restaurant "Max Medborgaplatsen" "Max Odenplan" "Max Torsplan" --moped-cost-per-hour 270
+```
+
 
