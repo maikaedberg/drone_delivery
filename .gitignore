@@ -12,3 +12,6 @@ notebooks/*.ipynb
 
 # macOS
 .DS_Store
+
+# all api keys
+key/*
