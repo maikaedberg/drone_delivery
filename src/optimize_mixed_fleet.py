@@ -126,7 +126,12 @@ def get_service_time_col(fleet_type, use_no_fly_zone):
     else:
         return constants.MOPED_UNAVAILABILITY_TIME
 
-def find_minimal_fleet(delivery_df, use_no_fly_zone=True, restaurant=None):
+def find_minimal_fleet(
+    delivery_df,
+    use_no_fly_zone=True,
+    restaurant=None,
+    moped_cost_per_hour=constants.MOPED_COST_PER_HOUR,
+):
     min_fleet = {}
 
     drone_service_time_col = get_service_time_col(constants.FLEET_TYPE_DRONE, use_no_fly_zone)
@@ -137,11 +142,21 @@ def find_minimal_fleet(delivery_df, use_no_fly_zone=True, restaurant=None):
     )
 
     if restaurant is not None:
-        delivery_df = delivery_df[
-            delivery_df[constants.RESTAURANT_NAME] == restaurant
+        restaurants = [restaurant] if isinstance(restaurant, str) else restaurant
+        available_restaurants = set(
+            delivery_df[constants.RESTAURANT_NAME].dropna().unique()
+        )
+        missing_restaurants = [
+            name for name in restaurants if name not in available_restaurants
         ]
-        if delivery_df.empty:
-            raise ValueError(f"Restaurant not found: {restaurant}")
+        if missing_restaurants:
+            raise ValueError(
+                "Restaurants not found or with no feasible orders: "
+                + ", ".join(missing_restaurants)
+            )
+        delivery_df = delivery_df[
+            delivery_df[constants.RESTAURANT_NAME].isin(restaurants)
+        ]
     
     print(f"WARNING: {dropped_orders} orders were dropped.")
 
@@ -261,7 +276,7 @@ def find_minimal_fleet(delivery_df, use_no_fly_zone=True, restaurant=None):
                 for fleet_index in range(n_possible_drones)
             ) +
             gp.quicksum(
-                y_moped[fleet_index] * constants.MOPED_COST_PER_HOUR
+                y_moped[fleet_index] * moped_cost_per_hour
                 for fleet_index in range(n_possible_mopeds)
             ) ,
             gp.GRB.MINIMIZE
@@ -293,12 +308,18 @@ def find_minimal_fleet(delivery_df, use_no_fly_zone=True, restaurant=None):
     return min_fleet
 
 
-def analyse_minimum_fleets(fname, use_no_fly_zone=True, restaurant=None):
+def analyse_minimum_fleets(
+    fname,
+    use_no_fly_zone=True,
+    restaurant=None,
+    moped_cost_per_hour=constants.MOPED_COST_PER_HOUR,
+):
     delivery_df = pd.read_csv(fname)
     min_mixed_fleet = find_minimal_fleet(
         delivery_df,
         use_no_fly_zone=use_no_fly_zone,
         restaurant=restaurant,
+        moped_cost_per_hour=moped_cost_per_hour,
     )
 
     for restaurant, fleet in min_mixed_fleet.items():
@@ -318,7 +339,14 @@ parser.add_argument(
 )
 parser.add_argument(
     "--restaurant",
+    nargs="+",
     help="Optimize only this restaurant.",
+)
+parser.add_argument(
+    "--moped-cost-per-hour",
+    type=int,
+    default=constants.MOPED_COST_PER_HOUR,
+    help="Moped hourly cost in SEK (default: %(default)s).",
 )
 args = parser.parse_args()
 
@@ -330,4 +358,5 @@ analyse_minimum_fleets(
     input_file,
     use_no_fly_zone=not args.ignore_no_fly_zone,
     restaurant=args.restaurant,
+    moped_cost_per_hour=args.moped_cost_per_hour,
 )
