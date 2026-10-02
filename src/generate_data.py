@@ -17,6 +17,7 @@ def generate_random_points_with_exclusions(main_coords, num_points):
     excluding specified sub-areas.
 
     :param main_coords: List of (lon, lat) tuples for the main area.
+    :param exclusion_zones: List of lists of (lon, lat) tuples to exclude.
     :param num_points: Integer, number of valid points to generate.
     :return: List of (latitude, longitude) tuples.
     """
@@ -44,12 +45,13 @@ def generate_random_points_with_exclusions(main_coords, num_points):
 
     return valid_points
 
-def generate_random_points_in_shape(main_shape, num_points):
+def generate_random_points_in_shape(main_shape, exclusion_zones, num_points):
     """
     Generates random (latitude, longitude) coordinates within a Shapely geometry,
     excluding specified sub-areas.
 
     :param main_shape: A Shapely Polygon or MultiPolygon object.
+    :param exclusion_zones: List of lists of (lon, lat) tuples to exclude.
     :param num_points: Integer, number of valid points to generate.
     :return: List of (latitude, longitude) tuples.
     """
@@ -57,9 +59,9 @@ def generate_random_points_in_shape(main_shape, num_points):
     valid_area = main_shape
 
     # 2. Subtract each exclusion zone
-    #for zone in exclusion_zones:
-    #    exclusion_poly = Polygon(zone)
-    #    valid_area = valid_area.difference(exclusion_poly)
+    for zone in exclusion_zones:
+        exclusion_poly = Polygon(zone)
+        valid_area = valid_area.difference(exclusion_poly)
 
     # 3. Get the bounding box of the entire combined area
     min_x, min_y, max_x, max_y = valid_area.bounds
@@ -94,8 +96,8 @@ def generate_random_points_stockholm_innercity(N, area="all"):
     # 2. Merge them into a single "Inner City" geometry using unary_union
     inner_city_shape = unary_union(districts)
 
-    # 3. Generate N random points across all of inner-city Stockholm
-    return generate_random_points_in_shape(inner_city_shape, N)
+    # 3. Generate N random points across all of inner-city Stockholm, excluding no-fly zones
+    return generate_random_points_in_shape(inner_city_shape, [], N)
 
 def get_road_distance(restaurants, delivery_locations, restaurants_dict):
 
@@ -166,7 +168,10 @@ def get_nearest_restaurant_dist(order_coord, restaurants):
         for name, (resto_lat, resto_lon) in restaurants.items()
     }
 
-    nearest = min(distances, key=distances.get)
+    if not distances:
+        return None
+
+    nearest = min(distances, key=lambda name: distances[name])
     return nearest, distances[nearest]
 
 def get_moped_unavailability_time(moped_travel_distances):
@@ -209,10 +214,20 @@ def generate_delivery_data(N, restaurants_dict, area, fname):
 
     # step 1: generate N locations random as delivery locations
     delivery_locations = generate_random_points_stockholm_innercity(N, area)
-    nearest = [
-        get_nearest_restaurant_dist((lat, lon), restaurants_dict)
-        for lat, lon in delivery_locations
-    ]
+    nearest = []
+    locations_with_distances = []
+    for lat, lon in delivery_locations:
+        nearest_restaurant = get_nearest_restaurant_dist(
+            (lat, lon), restaurants_dict
+        )
+        if nearest_restaurant is None:
+            continue
+        nearest.append(nearest_restaurant)
+        locations_with_distances.append((lat, lon))
+
+    delivery_locations = locations_with_distances
+    if not nearest:
+        raise ValueError("No delivery points had an available restaurant distance.")
 
     # step 2: get the nearest restaurant and geodesic distance for each delivery location
     restaurants, geodesic_dists = map(list, zip(*nearest))
@@ -228,7 +243,7 @@ def generate_delivery_data(N, restaurants_dict, area, fname):
 
     drone_delivery_distances = geodesic_dists.copy()
     penalized_drone_delivery_distances = geodesic_dists.copy()
-    for i in range(N):
+    for i in range(len(delivery_locations)):
         if no_fly_status[i] == constants.STATUS_NOGO:
             penalized_drone_delivery_distances[i] = np.nan
         elif no_fly_status[i] == constants.STATUS_INTERSECT:
@@ -295,10 +310,14 @@ if Path(args.f).name != args.f:
 if args.a == "södermalm":
     args.a = "sodermalm"
 if args.a == "sodermalm":
+    sodermalm_polygon = Polygon(constants.SODERMALM_POLYGON)
     restaurants_dict = {
-        k: v for k, v in constants.RESTAURANTS_DICT.items()
-        if "södermalm" in k.lower()
+        name: coordinates
+        for name, coordinates in constants.RESTAURANTS_DICT.items()
+        if sodermalm_polygon.covers(Point(coordinates[1], coordinates[0]))
     }
+    if not restaurants_dict:
+        parser.error("No configured restaurants are inside the Södermalm area")
 elif args.a == "all":
     restaurants_dict = constants.RESTAURANTS_DICT
 else:
