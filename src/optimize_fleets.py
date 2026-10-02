@@ -113,10 +113,10 @@ def find_minimal_fleet(
     print(f"WARNING: {dropped_orders} orders were dropped.")
 
     for restaurant, restaurant_df in delivery_df.groupby(constants.RESTAURANT_NAME):
-        print(
-            f"Optimizing for restaurant {restaurant} with "
-            f"{len(restaurant_df)} orders, fleet_type={fleet_type}"
-        )
+        #print(
+        #    f"Optimizing for restaurant {restaurant} with "
+        #    f"{len(restaurant_df)} orders, fleet_type={fleet_type}"
+        #)
         restaurant_df = assign_buckets(restaurant_df).reset_index(drop=True)
 
         n_orders = len(restaurant_df)
@@ -242,11 +242,17 @@ def analyse_minimum_fleets(fname, use_no_fly_zone=True, restaurant=None):
         restaurant=restaurant,
     )
 
-    for restaurant, min_fleets in min_drone_fleet.items():
-        print(f"Restaurant: {restaurant}, Minimum Drones Required: {min_fleets}")
-    for restaurant, min_fleets in min_moped_fleet.items():
-        print(f"Restaurant: {restaurant}, Minimum Mopeds Required: {min_fleets}")
-
+    input_restaurants = delivery_df[constants.RESTAURANT_NAME].dropna().unique()
+    restaurants = [
+        name for name in constants.RESTAURANTS_DICT if name in input_restaurants
+    ]
+    print(f"{'Restaurant':<24} {'Drones':>8} {'Mopeds':>8}")
+    print("-" * 42)
+    for restaurant in restaurants:
+        drone_count = min_drone_fleet.get(restaurant, "N/A")
+        moped_count = min_moped_fleet.get(restaurant, "N/A")
+        print(f"{restaurant:<24} {drone_count:>8} {moped_count:>8}")
+    print("N/A means no orders remained after that vehicle's feasibility filter.")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-f", default="delivery_locations.csv", help="Input filename")
