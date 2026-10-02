@@ -45,13 +45,12 @@ def generate_random_points_with_exclusions(main_coords, num_points):
 
     return valid_points
 
-def generate_random_points_in_shape(main_shape, exclusion_zones, num_points):
+def generate_random_points_in_shape(main_shape, num_points):
     """
     Generates random (latitude, longitude) coordinates within a Shapely geometry,
     excluding specified sub-areas.
 
     :param main_shape: A Shapely Polygon or MultiPolygon object.
-    :param exclusion_zones: List of lists of (lon, lat) tuples to exclude.
     :param num_points: Integer, number of valid points to generate.
     :return: List of (latitude, longitude) tuples.
     """
@@ -96,8 +95,8 @@ def generate_random_points_stockholm_innercity(N, area="all"):
     # 2. Merge them into a single "Inner City" geometry using unary_union
     inner_city_shape = unary_union(districts)
 
-    # 3. Generate N random points across all of inner-city Stockholm, excluding no-fly zones
-    return generate_random_points_in_shape(inner_city_shape, constants.EXCLUSION_NO_FLY_ZONE, N)
+    # 3. Generate N random points across all of inner-city Stockholm
+    return generate_random_points_in_shape(inner_city_shape, N)
 
 def get_road_distance(restaurants, delivery_locations, restaurants_dict):
 
