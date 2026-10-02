@@ -17,7 +17,6 @@ def generate_random_points_with_exclusions(main_coords, num_points):
     excluding specified sub-areas.
 
     :param main_coords: List of (lon, lat) tuples for the main area.
-    :param exclusion_zones: List of lists of (lon, lat) tuples to exclude.
     :param num_points: Integer, number of valid points to generate.
     :return: List of (latitude, longitude) tuples.
     """
@@ -58,9 +57,9 @@ def generate_random_points_in_shape(main_shape, num_points):
     valid_area = main_shape
 
     # 2. Subtract each exclusion zone
-    for zone in exclusion_zones:
-        exclusion_poly = Polygon(zone)
-        valid_area = valid_area.difference(exclusion_poly)
+    #for zone in exclusion_zones:
+    #    exclusion_poly = Polygon(zone)
+    #    valid_area = valid_area.difference(exclusion_poly)
 
     # 3. Get the bounding box of the entire combined area
     min_x, min_y, max_x, max_y = valid_area.bounds
