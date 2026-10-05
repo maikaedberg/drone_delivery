@@ -1,6 +1,6 @@
-import math
-import constants
 import pandas as pd
+
+import math
 
 def erlang_c(s, a):
     if s <= a:
@@ -9,6 +9,16 @@ def erlang_c(s, a):
     normalizer = sum(a ** k / math.factorial(k) for k in range(s)) + tail
     return tail / normalizer
 
+def asa(num_drones, orders_per_hour, unavailability_minutes):
+    mu = 60 / unavailability_minutes
+    a = orders_per_hour / mu
+
+    if num_drones <= a:
+        return float("inf")  # unstable system
+
+    return 60 * erlang_c(num_drones, a) / (
+        num_drones * mu - orders_per_hour
+    )
 
 def minimum_drones_for_asa(lambda_per_hour, mean_service_minutes, target_asa_minutes):
     mu_per_hour = 60.0 / mean_service_minutes
@@ -20,49 +30,58 @@ def minimum_drones_for_asa(lambda_per_hour, mean_service_minutes, target_asa_min
         if asa_minutes <= target_asa_minutes:
             return s
         s += 1
+
 def tsf(s, lambda_per_hour, ts_minutes, T_minutes):
     mu = 60 / ts_minutes
     a = lambda_per_hour / mu
-
     if s <= a:
         return 0.0
-
     return 1 - erlang_c(s, a) * math.exp(-(s * mu - lambda_per_hour) * T_minutes / 60)
 
+#drones tsf plot söder
 
-def find_min_qt(n_orders_per_hour, avg_service_time):
-    target_asa = constants.TIME_BUCKET
-    fleets = minimum_drones_for_asa(n_orders_per_hour, avg_service_time, target_asa)
-    return fleets
+import numpy as np
+import matplotlib.pyplot as plt
 
-def analyse_minimum_fleets(fname):
-           
-    delivery_df = pd.read_csv(fname)
-    for restaurant, restaurant_df in delivery_df.groupby(constants.RESTAURANT_NAME):
-        # find the minimum number of drones and moped required
-        n_orders_per_hour = len(restaurant_df) // constants.TOTAL_WINDOW_HOURS
-        avg_service_time_drone = restaurant_df[constants.DRONE_UNAVAILABILITY_TIME].mean()
-        avg_service_time_moped = restaurant_df[constants.MOPED_UNAVAILABILITY_TIME].mean()
-        min_num_drone_fleet = find_min_qt(n_orders_per_hour, avg_service_time_drone)
-        min_num_moped_fleet = find_min_qt(n_orders_per_hour, avg_service_time_moped)
+T = np.linspace(0, 40, 300)
 
-        print(f"Restaurant: {restaurant}, Minimum Drones Required: {min_num_drone_fleet}")
-        print(f"Restaurant: {restaurant}, Minimum Mopeds Required: {min_num_moped_fleet}")
+df = pd.read_csv("../data/deliveries_sodermalm.csv")
+drone_service_time = df['drone_unavailability_time'].mean()
 
-import argparse
-from pathlib import Path
+plt.plot(T, [tsf(17, 100, drone_service_time, t) for t in T], label="17 drones")
+plt.plot(T, [tsf(16, 100, drone_service_time, t) for t in T], label="16 drones")
+plt.plot(T, [tsf(15, 100, drone_service_time, t) for t in T], label="15 drones")
+plt.plot(T, [tsf(14, 100, drone_service_time, t) for t in T], label="14 drones")
 
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "-f",
-    default="delivery_locations.csv",
-    help="Input filename"
-)
-args = parser.parse_args()
+plt.xlabel("Waiting-time limit T (minutes)",fontsize=14)
+plt.ylabel("TSF",fontsize=14)
+plt.title("TSF Drones Södermalm",fontsize=16)
+plt.tick_params(axis="both", labelsize=12)
+plt.ylim(0, 1)
+plt.xlim(0, 20)
+plt.grid(alpha=0.3)
+plt.legend()
+plt.show()
 
-if Path(args.f).name != args.f:
-    parser.error("-f must contain a filename only, not a directory path")
+#mopeds tsf plot söder
 
-input_file = Path(__file__).resolve().parent.parent / "data" / args.f
+import numpy as np
+import matplotlib.pyplot as plt
 
-analyse_minimum_fleets(input_file)
+T = np.linspace(0, 20, 300)
+moped_service_time = df['moped_unavailability_time'].mean()
+
+plt.plot(T, [tsf(28, 100, moped_service_time, t) for t in T], label="28 mopeds")
+plt.plot(T, [tsf(27, 100, moped_service_time, t) for t in T], label="27 mopeds")
+plt.plot(T, [tsf(26, 100, moped_service_time, t) for t in T], label="26 mopeds")
+plt.plot(T, [tsf(25, 100, moped_service_time, t) for t in T], label="25 mopeds")
+
+plt.xlabel("Waiting-time limit T (minutes)",fontsize=14)
+plt.ylabel("TSF", fontsize=14)
+plt.title("TSF mopeds Södermalm", fontsize=16)
+plt.ylim(0, 1)
+plt.xlim(0, 20)
+plt.grid(alpha=0.3)
+plt.tick_params(axis="both", labelsize=12)
+plt.legend()
+plt.show()
